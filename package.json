@@ -1,0 +1,13 @@
+{
+    "name": "KADOKAWA/RPGMV",
+    "main": "src/index.html",
+    "js-flags": "--expose-gc",
+    "window": {
+        "title": "",
+        "toolbar": false,
+        "width": 816,
+        "height": 624,
+        "fullscreen": false,
+        "icon": "src/icon/icon.png"
+    }
+}

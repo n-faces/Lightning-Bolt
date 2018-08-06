@@ -4,10 +4,23 @@
 
 'use strict';
 
+/*
+* 1. PIXI.ParticleContainer
+* 2. Sấm sét nhiều nhành
+* 3. Hiệu ứng lightning text.
+* 4. Interactivity và User Input.
+* */
 const SCREEN_WIDTH = 800;
 const SCREEN_HEIGHT = 600;
+const SWAY = 60;
+const JAGGEDNESS = 1 / SWAY;
 
-let app = new PIXI.Application(SCREEN_WIDTH, SCREEN_HEIGHT, {antialias: true});
+let app = new PIXI.Application({
+    width: SCREEN_WIDTH,
+    height: SCREEN_HEIGHT,
+    antialias: true,
+    view: $('#monitor').get(0)
+});
 app.stage.interactive = true;
 
 // Work around for PIXI issue with container.
@@ -17,12 +30,13 @@ document.body.appendChild(app.view);
 (function updateResolution() {
     let resizeWidth = SCREEN_WIDTH - window.innerWidth;
     let resizeHeight = SCREEN_HEIGHT - window.innerHeight;
-    window.moveBy(-1 * resizeWidth / 2, -1 * resizeHeight / 2);
+    // window.moveBy(-1 * resizeWidth / 2, -1 * resizeHeight / 2);
     // window.resizeBy(resizeWidth, resizeHeight);
     app.renderer.resize(SCREEN_WIDTH, SCREEN_HEIGHT);
 })();
 
-function spriteBatch(texture, position, color = 0, rotation = 0, scale = 1, anchorX = 0, anchorY = 0) {
+function spriteBatch(texture = throwError(), position = throwError(),
+                     color = 0, rotation = 0, scale = 1, anchorX = 0, anchorY = 0) {
     let sprite = new PIXI.Sprite(texture);
     sprite.tint = color;
     sprite.position.set(position.x, position.y);
@@ -55,9 +69,9 @@ class Segment {
         this.A = A;
         this.B = B;
         this.thickness = thickness || 1;
+        this.children = [];
         this._capTexture = PIXI.loader.resources['Cap'].texture;
         this._segmentTexture = PIXI.loader.resources['Segment'].texture;
-        this._container = new PIXI.Container();
     }
 
     render(color) {
@@ -71,28 +85,33 @@ class Segment {
             thicknessScale = this.thickness / imageThickness,
             middleScale = new Vector2(tangent.length() / this._segmentTexture.width, thicknessScale);
 
-        this._container.addChild(
+        this.addChild(
             // Left cap
             spriteBatch(this._capTexture, A, color, rotation, thicknessScale, 1, 0.5),
-            // Middle
-            spriteBatch(this._segmentTexture, A.add(B).divide(2), color, rotation, middleScale, 0.5, 0.5),
             // Right cap
             spriteBatch(this._capTexture, B, color, rotation + Math.PI, thicknessScale, 1, 0.5),
+            // Middle
+            spriteBatch(this._segmentTexture, A, color, rotation, middleScale, 0, 0.5)
         );
     };
+
+    addChild(args) {
+        for (let child of arguments) {
+            this.children.push(child);
+        }
+    }
 }
 
-class Bolt {
+class LightningBolt {
     constructor(A, B, thickness) {
         this.A = A;
         this.B = B;
         this.thickness = thickness;
         this.fadeRate = 0.04;
-        this.alphaMultiplier = 0.6;
         this.container = new PIXI.Container();
         this.bolt = [];
         this._rendered = false;
-        this.createBolt(A, B, 6);
+        this.createLightningBolt();
     }
 
     get alpha() {
@@ -103,53 +122,47 @@ class Bolt {
         this.container.alpha = value;
     }
 
-    createBolt() {
-        const SWAY = 60,
-            JAGGEDNESS = 1 / SWAY;
-
+    createLightningBolt() {
         let positions = [], A = this.A, B = this.B,
             tangent = Vector2.subtract(B, A),
             normal = Vector2.normalize(tangent),
             length = tangent.length(),
-
             prevPoint = A, prevDisplacement = 0;
 
         positions.push(0);
-        for (let i = 0; i < length / 8; i++) {
+        for (let i = 0; i < length / 4; i++) {
             positions.push(Math.random());
         }
-
         positions.sort();
+
         for (let i = 1; i < positions.length; i++) {
-            // prevent sharp angles by ensuring very close positions also have small perpendicular variation.
-            let scale = (length * JAGGEDNESS) * (positions[i] - positions[i - 1]),
-                // Points near the middle of the branchLightning can be further from the central line.
-                envelope = positions[i] > 0.95 ? 64 * (1 - positions[i]) : 1,
-                displacement = Random.range(-SWAY, SWAY);
+            // Prevent sharp angles by ensuring very close positions also have small perpendicular variation.
+            let scale = (length * JAGGEDNESS) * (positions[i] - positions[i - 1]);
+
+            // Points near the middle of the bolt can be further from the central line.
+            let envelope = positions[i] > 0.95 ? 20 * (1 - positions[i]) : 1;
+            let displacement = Random.range(-SWAY, SWAY);
+
             displacement -= (displacement - prevDisplacement) * (1 - scale);
             displacement *= envelope;
-            displacement = Math.clamp(displacement, -SWAY, SWAY);
 
             let point = Vector2
                 .add(A, (Vector2.multiply(tangent, positions[i])))
                 .add(Vector2.multiply(normal, displacement).turnLeft());
 
             this.bolt.push(new Segment(prevPoint, point, this.thickness));
-            this.container.addChild(this.bolt.last._container);
-
             prevPoint = point;
             prevDisplacement = displacement;
         }
 
         this.bolt.push(new Segment(prevPoint, B, this.thickness));
-        this.container.addChild(this.bolt.last._container);
     };
 
     refresh() {
         if (this.bolt.length > 0) {
             this.bolt = [];
             this.container.removeChildren();
-            this.createBolt(this.A, this.B, 6);
+            this.createLightningBolt();
             this.alpha = 1;
             this._rendered = false;
         }
@@ -165,33 +178,11 @@ class Bolt {
         return this._rendered && this.alpha <= 0;
     };
 
-    getPoint(position) {
-        let A = this.A,
-            B = this.B,
-            direction = B.getSubtracted(A).normalize(),
-            bolt = this.bolt,
-            line;
-
-        position *= A.distance(B);
-
-        for (let segment of bolt) {
-            if (seg.B.getSubtracted(start).dot(direction) >= position) {
-                line = segment;
-                break;
-            }
-        }
-
-        let lineStartPos = line.A.getSubtracted(start).dot(direction),
-            lineEndPos = line.B.getSubtracted(start).dot(direction),
-            linePos = (position - lineStartPos) / (lineEndPos - lineStartPos);
-
-        return line.A.getLerp(line.B, linePos);
-    };
-
     render(color) {
         if (this.alpha <= 0) return;
         for (let segment of this.bolt) {
             segment.render(color);
+            this.container.addChild(...segment.children);
         }
         this._rendered = true;
     };
@@ -217,12 +208,12 @@ class Bolt {
     }
 
     _createBranchs() {
-        let mainBolt = new Bolt(this.A, this.B, this.color),
+        let mainLightningBolt = new LightningBolt(this.A, this.B, this.color),
             bolts = this.bolts,
             numBranches = Random.range(3, 6),
             branchPoints = [], i, len;
 
-        bolts.push(mainBolt);
+        bolts.push(mainLightningBolt);
 
         while (numBranches--) {
             branchPoints.push(Math.random());
@@ -232,8 +223,8 @@ class Bolt {
 
         for (i = 0, len = branchPoints.length; i < len; i++) {
 
-            // Bolt.GetPoint() gets the position of the lightning branchLightning at specified fraction (0 = start of branchLightning, 1 = end)
-            let boltStart = mainBolt.getPoint(branchPoints[i]),
+            // LightningBolt.GetPoint() gets the position of the lightning branchLightning at specified fraction (0 = start of branchLightning, 1 = end)
+            let boltStart = mainLightningBolt.getPoint(branchPoints[i]),
                 diff = this.B.getSubtracted(this.A),
                 shouldInvert;
 
@@ -253,7 +244,7 @@ class Bolt {
             //or them, the proper method in the Vector object:
             diff.add(boltStart).rotateAroundPivot(boltStart, ( 30 * shouldInvert ) * DEGREES_TO_RADIANS);
 
-            bolts.push(new Bolt(boltStart, diff, this.color));
+            bolts.push(new LightningBolt(boltStart, diff, this.color));
         }
     };
 
@@ -282,50 +273,17 @@ class ScreenText extends PIXI.Text {
     }
 }
 
-// Audio =============================================================
-class AppAudio {
-    constructor() {
-        throw new Error('This is a static class.');
-    }
-
-    static init() {
-        this.resources = {};
-        this.loadSounds();
-    }
-
-    static loadSounds(options = {loop: false, volume: 0.5},
-                      callback = () => {
-                      }) {
-        let count = this.list.length;
-
-        function canplay() {
-            if (--count === 0) callback(this.resources);
-        }
-
-        for (let name of this.list) {
-            this.resources[name] = document.createElement('audio');
-            this.resources[name].addEventListener('canplay', canplay, false);
-            this.resources[name].src = "sounds/" + name + ".ogg";
-            this.resources[name].loop = options.loop;
-            this.resources[name].volume = options.volume;
-        }
-    }
-
-    static play(name) {
-        this.resources[name].play();
-    }
-}
-
-AppAudio.list = ['Thunder1', 'Thunder2', 'Thunder3'];
-AppAudio.init();
-
 PIXI.loader
     .add('Cap', 'img/Cap.png')
     .add('Segment', 'img/Segment.png')
     .load(function () {
         let p1 = new Vector2();
         let p2 = new Vector2();
-        let bolt;
+        let bolt = new LightningBolt(p1, p2, 1);
+        app.stage.addChild(bolt.container);
+        app.ticker.add(() => {
+            bolt.update();
+        });
 
         function onPointerDown(event) {
             switch (Random.int(4)) {
@@ -345,16 +303,16 @@ PIXI.loader
                     throw new Error('Unknown ID!');
             }
 
-            AppAudio.play(AppAudio.list[Random.int(3)]);
+            AudioHelper.playRandom();
+
+            let thickness = parseInt($('#thickness').val());
+            let tint = Utils.css2hex($('#tint').val());
+            tint = Math.max(tint, 1);
 
             p2.set(event.data.global.x, event.data.global.y);
-            if (!bolt) {
-                bolt = new Bolt(p1, p2, 1);
-                app.stage.addChild(bolt.container);
-                app.ticker.add(bolt.update.bind(bolt));
-            }
-            bolt.setPosition(p1, p2);
-            bolt.render(0xffff88);
+            bolt.thickness = thickness;
+            bolt.refresh();
+            bolt.render(tint);
         }
 
         app.stage.addChild(new ScreenText());
